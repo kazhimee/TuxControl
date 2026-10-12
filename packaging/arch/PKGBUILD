@@ -4,7 +4,7 @@ pkgrel=1
 pkgdesc='GNOME control center for apps, services, themes, and extensions'
 arch=('any')
 url='https://github.com/'
-license=('MIT')
+license=('GPL3')
 depends=('python>=3.10' 'python-gobject' 'gtk4' 'systemd')
 source=("tuxcontrol-${pkgver}.tar.gz" "LICENSE" "org.tuxcontrol.App.desktop")
 sha256sums=('SKIP' 'SKIP' 'SKIP')

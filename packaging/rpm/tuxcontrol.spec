@@ -2,7 +2,7 @@ Name:           tuxcontrol
 Version:        %{pkgver}
 Release:        1%{?dist}
 Summary:        GNOME control center for apps, services, themes, and extensions
-License:        MIT
+License:        GPL-3.0-only
 BuildArch:      noarch
 Requires:       python3 >= 3.10
 Requires:       python3-gobject

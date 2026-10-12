@@ -19,9 +19,9 @@ TuxControl is an open-source GTK 4 desktop control panel for Linux. It currently
 - Developer: Kazhime Kagemori
 - Developer email: kazhimee@gmail.com
 - Contact email: kazhimeofficial@gmail.com
-- License: MIT (open source)
+- License: GNU General Public License v3.0 (GPL-3.0-only)
 
-Contributions are welcome under the terms of the MIT License.
+Contributions are welcome under the terms of the GNU General Public License v3.0.
 
 ## Requirements
 
@@ -83,7 +83,7 @@ Run the tests with:
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-This project is licensed under the MIT License. It is ready to publish to GitHub; add a remote repository URL when creating the upstream repository.
+This project is licensed under the GNU General Public License v3.0. See [LICENSE](./LICENSE) for the full license text.
 
 ## Release packages
 
