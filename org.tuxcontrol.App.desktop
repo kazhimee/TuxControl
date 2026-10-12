@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=TuxControl
+Comment=Manage Linux applications, services, themes, and extensions
+Exec=tuxcontrol
+Icon=preferences-desktop-theme
+Terminal=false
+Categories=Settings;System;
+OnlyShowIn=GNOME;
+StartupNotify=true
