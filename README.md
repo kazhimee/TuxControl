@@ -17,7 +17,6 @@ TuxControl is an open-source GTK 4 desktop control panel for Linux. It currently
 ## Project contacts
 
 - Developer: Kazhime Kagemori
-- Developer email: kazhimee@gmail.com
 - Contact email: kazhimeofficial@gmail.com
 - License: GNU General Public License v3.0 (GPL-3.0-only)
 
