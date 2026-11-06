@@ -35,6 +35,38 @@ class ValidationTests(unittest.TestCase):
                 ["pkexec", "apt-get", "-y", "--no-install-recommends", "install", "example-app"],
             )
 
+    def test_package_removal_is_noninteractive_for_apt(self) -> None:
+        with patch.object(backends, "available_package_manager", return_value="apt-get"):
+            self.assertEqual(
+                backends.package_manager_command("example-app", "remove"),
+                ["pkexec", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "-y", "remove", "example-app"],
+            )
+
+    def test_removal_plan_prefers_flatpak_and_refuses_protected_packages(self) -> None:
+        plan = backends.plan_app_removal("org.example.App.desktop", "/x/y.desktop", {"org.example.App"}, set())
+        self.assertEqual((plan.kind, plan.target), ("flatpak-user", "org.example.App"))
+        with patch.object(backends, "desktop_app_package", return_value="systemd"), self.assertRaises(RuntimeError):
+            backends.plan_app_removal("a.desktop", "/usr/share/applications/a.desktop", set(), set())
+
+    def test_removal_plan_for_package_and_unknown_launcher(self) -> None:
+        with patch.object(backends, "desktop_app_package", return_value="demo"):
+            plan = backends.plan_app_removal("demo.desktop", "/usr/share/applications/demo.desktop", set(), set())
+        self.assertEqual((plan.kind, plan.target), ("package", "demo"))
+        with patch.object(backends, "desktop_app_package", return_value=None), self.assertRaises(RuntimeError):
+            backends.plan_app_removal("x.desktop", "/usr/share/applications/x.desktop", set(), set())
+
+    def test_user_launcher_removal_only_deletes_the_desktop_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.object(Path, "home", return_value=Path(tmp)):
+            launcher = Path(tmp) / ".local/share/applications/demo.desktop"
+            launcher.parent.mkdir(parents=True)
+            launcher.write_text("[Desktop Entry]")
+            plan = backends.plan_app_removal("demo.desktop", str(launcher), set(), set())
+            self.assertEqual(plan.kind, "launcher")
+            backends.execute_removal(plan)
+            self.assertFalse(launcher.exists())
+            with self.assertRaises(RuntimeError):
+                backends.execute_removal(backends.RemovalPlan("launcher", "/etc/passwd", ""))
+
     def test_system_service_action_uses_pkexec_and_validated_arguments(self) -> None:
         with (
             patch.object(backends.shutil, "which", return_value="/usr/bin/pkexec"),

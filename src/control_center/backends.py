@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 from html import unescape
 from dataclasses import dataclass
 from pathlib import Path
@@ -74,6 +75,31 @@ def run_command(
         detail = result.stderr.strip() or result.stdout.strip()
         raise RuntimeError(detail or f"{args[0]} exited with status {result.returncode}.")
     return result
+
+
+def run_streaming(args: Sequence[str], on_line, *, timeout: int = 900) -> None:
+    """Run a fixed argument vector and report each output line as it appears."""
+    if not args or not all(isinstance(arg, str) for arg in args):
+        raise ValueError("A command must be a non-empty sequence of strings.")
+    on_line("$ " + " ".join(args))
+    process = subprocess.Popen(
+        list(args),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    timer = threading.Timer(timeout, process.kill)
+    timer.start()
+    try:
+        assert process.stdout is not None
+        for line in process.stdout:
+            on_line(line.rstrip())
+        code = process.wait()
+    finally:
+        timer.cancel()
+    if code:
+        raise RuntimeError(f"{args[0]} exited with status {code}. See the log for details.")
 
 
 def detect_desktop() -> DesktopInfo:
@@ -204,6 +230,8 @@ def package_manager_command(package: str, action: str) -> list[str]:
 
     prefix = ["pkexec"]
     if manager == "apt-get":
+        if action == "remove":
+            return prefix + ["env", "DEBIAN_FRONTEND=noninteractive", manager, "-y", action, package]
         return prefix + [manager, "-y", "--no-install-recommends", action, package]
     if manager == "dnf":
         return prefix + [manager, "-y", action, package]
@@ -240,11 +268,13 @@ def desktop_app_package(desktop_file: str) -> str | None:
     return None
 
 
-def installed_flatpaks() -> list[tuple[str, str]]:
+def installed_flatpaks(scope: str = "user") -> list[tuple[str, str]]:
+    if scope not in {"user", "system"}:
+        raise ValueError("Unsupported Flatpak scope.")
     if not shutil.which("flatpak"):
         return []
     result = run_command(
-        ["flatpak", "list", "--user", "--app", "--columns=application,name"],
+        ["flatpak", "list", f"--{scope}", "--app", "--columns=application,name"],
         check=False,
     )
     if result.returncode:
@@ -257,21 +287,139 @@ def installed_flatpaks() -> list[tuple[str, str]]:
     return sorted(apps, key=lambda app: app[1].casefold())
 
 
-def install_flatpak(app_id: str, remote: str = "flathub") -> None:
-    validate_flatpak_app_id(app_id)
-    if remote not in {"flathub"}:
-        raise ValueError("Unsupported Flatpak remote.")
-    if not shutil.which("flatpak"):
-        raise RuntimeError("Flatpak is not installed.")
-    run_command(
-        ["flatpak", "install", "--user", "--noninteractive", remote, app_id],
-        timeout=900,
-    )
+# Removing these would break the desktop session or this program's own runtime.
+PROTECTED_PACKAGES = frozenset({
+    "python3", "python", "systemd", "gnome-shell", "gnome-session", "gdm", "gdm3",
+    "gtk4", "libgtk-4-1", "glibc", "libc6", "bash", "dbus", "polkit", "policykit-1",
+    "pacman", "apt", "dpkg", "rpm", "dnf", "sudo", "linux", "coreutils", "filesystem",
+})
 
 
-def remove_flatpak(app_id: str) -> None:
-    validate_flatpak_app_id(app_id)
-    run_command(["flatpak", "uninstall", "--user", "--noninteractive", app_id], timeout=900)
+@dataclass(frozen=True)
+class RemovalPlan:
+    kind: str  # "flatpak-user", "flatpak-system", "snap", "package" or "launcher"
+    target: str
+    message: str
+    details: tuple[str, ...] = ()
+
+
+def _is_under(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _package_preview(package: str) -> list[str]:
+    """Describe what removing a system package would do, using dry runs and file lists."""
+    manager = available_package_manager()
+    lines: list[str] = []
+    try:
+        if manager == "apt-get":
+            result = run_command(["apt-get", "-s", "remove", package], check=False)
+            removed = [l.split()[1] for l in result.stdout.splitlines() if l.startswith("Remv ")]
+            unused = [l.split()[1] for l in result.stdout.splitlines() if l.startswith("Purg ")]
+            names = removed + unused
+            lines.append("Packages that will be removed: " + (", ".join(names) or package))
+            if len(names) > 1:
+                lines.insert(0, f"WARNING: {len(names) - 1} other package(s) depend on this one and will also be removed.")
+        elif manager == "pacman":
+            result = run_command(["pacman", "-Rp", "--print-format", "%n", package], check=False)
+            names = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+            lines.append("Packages that will be removed: " + (", ".join(names) or package))
+            if len(names) > 1:
+                lines.insert(0, f"WARNING: {len(names) - 1} other package(s) depend on this one and will also be removed.")
+        elif manager == "dnf":
+            lines.append("Dependent packages, if any, are listed by dnf in the log while it runs.")
+        else:
+            lines.append(f"Package that will be removed: {package}")
+        files = []
+        if shutil.which("dpkg-query") and manager == "apt-get":
+            files = run_command(["dpkg-query", "-L", package], check=False).stdout.splitlines()
+        elif shutil.which("rpm") and manager in {"dnf", "zypper"}:
+            files = run_command(["rpm", "-ql", package], check=False).stdout.splitlines()
+        elif shutil.which("pacman") and manager == "pacman":
+            files = [l.split(" ", 1)[1] for l in run_command(["pacman", "-Ql", package], check=False).stdout.splitlines() if " " in l]
+        files = [f for f in files if f.startswith("/") and not os.path.isdir(f)]
+        if files:
+            lines.append(f"{len(files)} installed files will be deleted, for example:")
+            lines.extend("  " + f for f in files[:8])
+        lines.append("Your personal settings in your home folder are not touched.")
+    except Exception as error:
+        lines.append(f"Could not preview the changes ({error}).")
+    return lines
+
+
+def plan_app_removal(
+    desktop_id: str,
+    desktop_file: str,
+    user_flatpaks: set[str],
+    system_flatpaks: set[str],
+) -> RemovalPlan:
+    """Decide how an application can be removed. Runs package queries; call off the UI thread."""
+    app_id = desktop_id.removesuffix(".desktop")
+    if app_id in user_flatpaks:
+        return RemovalPlan("flatpak-user", app_id, f"Uninstall Flatpak application {app_id} from your user account?", (
+            f"Runs: flatpak uninstall --user {app_id}",
+            f"The app's data in ~/.var/app/{app_id} is kept.",
+        ))
+    if app_id in system_flatpaks:
+        return RemovalPlan("flatpak-system", app_id, f"Uninstall system-wide Flatpak application {app_id}? Administrator authorization will be requested.", (
+                f"Runs: flatpak uninstall --system {app_id}",
+                f"The app's data in ~/.var/app/{app_id} is kept.",
+            ))
+    path = Path(desktop_file) if desktop_file else None
+    if path and path.is_absolute():
+        if "/snapd/desktop/" in str(path) and shutil.which("snap"):
+            snap = path.name.removesuffix(".desktop").split("_", 1)[0]
+            validate_package_name(snap)
+            return RemovalPlan("snap", snap, f"Remove Snap package “{snap}”? Administrator authorization will be requested.", (
+                f"Runs: snap remove {snap}",
+                "Snap may keep an automatic snapshot of the app's data.",
+            ))
+        if _is_under(path, Path.home()):
+            return RemovalPlan("launcher", str(path), f"This launcher is not owned by a package. Delete only the launcher file “{path.name}”? The program files are not touched.", (
+                f"Deletes only: {path}",
+            ))
+        package = desktop_app_package(str(path))
+        if package:
+            if package in PROTECTED_PACKAGES:
+                raise RuntimeError(f"“{package}” is a protected system package and cannot be removed from here.")
+            return RemovalPlan("package", package, f"Remove system package “{package}”? Administrator authorization will be requested and dependent packages may also be removed.", tuple(_package_preview(package)))
+    raise RuntimeError("Could not find how this application was installed, so it cannot be removed safely.")
+
+
+def execute_removal(plan: RemovalPlan, log=lambda _line: None) -> None:
+    """Carry out a plan, reporting each step and the tool's output through ``log``."""
+    if plan.kind == "flatpak-user":
+        validate_flatpak_app_id(plan.target)
+        run_streaming(["flatpak", "uninstall", "--user", "--noninteractive", plan.target], log)
+    elif plan.kind == "flatpak-system":
+        validate_flatpak_app_id(plan.target)
+        run_streaming(["flatpak", "uninstall", "--system", "--noninteractive", plan.target], log)
+    elif plan.kind == "snap":
+        validate_package_name(plan.target)
+        if not shutil.which("pkexec"):
+            raise RuntimeError("pkexec is required to request administrator authorization.")
+        log("Waiting for administrator authorization…")
+        run_streaming(["pkexec", "snap", "remove", plan.target], log)
+    elif plan.kind == "package":
+        if plan.target in PROTECTED_PACKAGES:
+            raise RuntimeError(f"“{plan.target}” is a protected system package.")
+        if not shutil.which("pkexec"):
+            raise RuntimeError("pkexec is required to request administrator authorization.")
+        log("Waiting for administrator authorization…")
+        run_streaming(package_manager_command(plan.target, "remove"), log)
+    elif plan.kind == "launcher":
+        path = Path(plan.target)
+        if not _is_under(path.parent, Path.home()) or path.suffix != ".desktop":
+            raise RuntimeError("Refusing to delete a file that is not a launcher in your home folder.")
+        log(f"Deleting {path}")
+        path.unlink(missing_ok=True)
+    else:
+        raise ValueError("Unknown removal type.")
+    log("Done.")
 
 
 def validate_flatpak_app_id(app_id: str) -> str:

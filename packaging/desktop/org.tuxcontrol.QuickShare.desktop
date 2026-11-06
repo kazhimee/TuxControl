@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=TuxControl Quick Share
+Comment=Receive files from nearby Android devices
+Exec=tuxcontrol-quickshare-tray
+Icon=tuxcontrol
+Terminal=false
+Categories=Network;FileTransfer;
+StartupNotify=false
+Actions=Send;
+
+[Desktop Action Send]
+Name=Send files…
+Exec=tuxcontrol-quickshare-send

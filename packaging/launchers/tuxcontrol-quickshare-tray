@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Starts the Quick Share tray. pystray, Pillow and pyquickshare are installed on
+# request into a private virtualenv, so the system Python is never modified.
+set -Eeuo pipefail
+here="$(dirname "$(readlink -f "$0")")"
+if [[ -d "$here/control_center" ]]; then libdir="$here"; else libdir="@LIBDIR@"; fi
+data="${XDG_DATA_HOME:-$HOME/.local/share}/tuxcontrol"
+venv="$data/venv"
+log="${XDG_CACHE_HOME:-$HOME/.cache}/tuxcontrol/quickshare-install.log"
+mkdir -p "$data" "$(dirname "$log")"
+title='TuxControl Quick Share'
+have() { command -v "$1" >/dev/null 2>&1; }
+show_error() {
+  if have zenity; then zenity --error --no-markup --title="$title" --text="$1" --width=520 || true
+  elif have kdialog; then kdialog --error "$1" --title "$title" || true
+  else printf 'ERROR: %s\n' "$1" >&2; fi
+}
+ask_install() {
+  if have zenity; then zenity --question --no-markup --title="$title" --text="$1" --ok-label='Download and Install' --cancel-label='Close' --width=520
+  elif have kdialog; then kdialog --yesno "$1" --yes-label 'Download and Install' --no-label 'Close' --title "$title"
+  else printf '\n%s\n' "$1"; read -r -p 'Install now? [Y/n] ' a; [[ "${a:-Y}" =~ ^[Yy] ]]; fi
+}
+deps_ok() {
+  [[ -x "$venv/bin/python" ]] \
+    && grep -qi '^include-system-site-packages = true' "$venv/pyvenv.cfg" 2>/dev/null \
+    && "$venv/bin/python" -c 'import pystray, PIL, pyquickshare' >/dev/null 2>&1
+}
+install_deps() {
+  {
+    [[ -x "$venv/bin/python" ]] && ! grep -qi '^include-system-site-packages = true' "$venv/pyvenv.cfg" && rm -rf "$venv"
+    [[ -x "$venv/bin/python" ]] || /usr/bin/python3 -m venv --system-site-packages "$venv"
+    "$venv/bin/python" -m pip install --upgrade pip
+    "$venv/bin/python" -m pip install 'pystray>=0.19' 'Pillow>=10'
+    # pyquickshare pins Python ~=3.10 although it works on newer versions.
+    "$venv/bin/python" -m pip install --ignore-requires-python pyquickshare
+    "$venv/bin/python" -c 'import pystray, PIL, pyquickshare'
+  } >"$log" 2>&1
+}
+if ! /usr/bin/python3 -c '
+import gi
+try:
+    gi.require_version("AyatanaAppIndicator3", "0.1")
+except ValueError:
+    gi.require_version("AppIndicator3", "0.1")' >/dev/null 2>&1; then
+  show_error "The AppIndicator library is missing.
+Debian/Ubuntu: sudo apt install gir1.2-ayatanaappindicator3-0.1
+Fedora: sudo dnf install libayatana-appindicator-gtk3
+Arch: sudo pacman -S libayatana-appindicator
+GNOME also needs the AppIndicator and KStatusNotifierItem Support extension."
+  exit 1
+fi
+if ! deps_ok; then
+  ask_install $'Quick Share needs a few Python packages (pystray, Pillow, pyquickshare).\n\nThey will be installed in a private environment in:\n'"$venv"$'\n\nNothing is changed system-wide.' || exit 0
+  install_deps || { show_error "Installation failed. Details: $log"; exit 1; }
+fi
+export PYTHONPATH="$libdir${PYTHONPATH:+:$PYTHONPATH}"
+export PYSTRAY_BACKEND="${PYSTRAY_BACKEND:-appindicator}"
+exec "$venv/bin/python" -m control_center.quickshare.tray

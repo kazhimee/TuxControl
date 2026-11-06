@@ -1,0 +1,21 @@
+#!/bin/sh
+here="$(dirname "$(readlink -f "$0")")"
+if [ -d "$here/control_center" ]; then libdir="$here"; else libdir="@LIBDIR@"; fi
+PYTHONPATH="$libdir${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+py=/usr/bin/python3
+[ -x "$py" ] || py="$(command -v python3 || true)"
+if [ -z "$py" ]; then
+  echo "TuxControl: python3 was not found." >&2
+  exit 1
+fi
+if ! "$py" -c 'import gi; gi.require_version("Gtk", "4.0")' 2>/dev/null; then
+  msg="TuxControl needs GTK 4 and PyGObject.
+Debian/Ubuntu: sudo apt install python3-gi gir1.2-gtk-4.0
+Fedora: sudo dnf install python3-gobject gtk4
+Arch: sudo pacman -S python-gobject gtk4"
+  if command -v zenity >/dev/null 2>&1; then zenity --error --title=TuxControl --text="$msg" || true
+  else echo "$msg" >&2; fi
+  exit 1
+fi
+exec "$py" -m control_center.quickshare.send_window "$@"

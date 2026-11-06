@@ -8,11 +8,15 @@ Requires:       python3 >= 3.10
 Requires:       python3-gobject
 Requires:       gtk4
 Requires:       systemd
+Recommends:     libayatana-appindicator-gtk3
+Recommends:     zenity
 Source0:        tuxcontrol-%{version}.tar.gz
+AutoReqProv:    no
 
 %description
 TuxControl is an open-source GTK 4 application for managing GNOME applications,
-services, themes, and shell extensions.
+services, themes, and shell extensions. It also includes an optional Quick Share
+tray for receiving files from nearby Android devices.
 
 %prep
 %setup -q -n tuxcontrol-%{version}
@@ -20,23 +24,26 @@ services, themes, and shell extensions.
 %build
 
 %install
-install -d %{buildroot}%{_libdir}/tuxcontrol/control_center
-install -d %{buildroot}%{_bindir}
-install -d %{buildroot}%{_datadir}/applications
+cp -a usr %{buildroot}/usr
 install -d %{buildroot}%{_datadir}/licenses/tuxcontrol
-install -m 0644 control_center/*.py %{buildroot}%{_libdir}/tuxcontrol/control_center/
-install -m 0644 org.tuxcontrol.App.desktop \
-  %{buildroot}%{_datadir}/applications/org.tuxcontrol.App.desktop
-install -m 0644 LICENSE %{buildroot}%{_datadir}/licenses/tuxcontrol/LICENSE
-cat > %{buildroot}%{_bindir}/tuxcontrol <<'LAUNCHER'
-#!/bin/sh
-export PYTHONPATH="%{_libdir}/tuxcontrol${PYTHONPATH:+:$PYTHONPATH}"
-exec /usr/bin/python3 -m control_center.app "$@"
-LAUNCHER
-chmod 0755 %{buildroot}%{_bindir}/tuxcontrol
+mv %{buildroot}%{_datadir}/doc/tuxcontrol/copyright %{buildroot}%{_datadir}/licenses/tuxcontrol/LICENSE
+rmdir %{buildroot}%{_datadir}/doc/tuxcontrol
+
+%post
+/usr/bin/update-desktop-database -q %{_datadir}/applications >/dev/null 2>&1 || :
+/usr/bin/gtk-update-icon-cache -q -t %{_datadir}/icons/hicolor >/dev/null 2>&1 || :
+
+%postun
+/usr/bin/update-desktop-database -q %{_datadir}/applications >/dev/null 2>&1 || :
+/usr/bin/gtk-update-icon-cache -q -t %{_datadir}/icons/hicolor >/dev/null 2>&1 || :
 
 %files
+%license %{_datadir}/licenses/tuxcontrol/LICENSE
 %{_bindir}/tuxcontrol
-%{_libdir}/tuxcontrol/control_center/
+%{_bindir}/tuxcontrol-quickshare-send
+%{_bindir}/tuxcontrol-quickshare-settings
+%{_bindir}/tuxcontrol-quickshare-tray
+%{_prefix}/lib/tuxcontrol/
 %{_datadir}/applications/org.tuxcontrol.App.desktop
-%{_datadir}/licenses/tuxcontrol/LICENSE
+%{_datadir}/applications/org.tuxcontrol.QuickShare.desktop
+%{_datadir}/icons/hicolor/256x256/apps/tuxcontrol.png

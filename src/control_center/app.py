@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -9,9 +13,13 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gio", "2.0")
-from gi.repository import Gio, GLib, Gtk
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import Gio, GLib, Gtk, GdkPixbuf
 
 from control_center import backends, themes
+
+# Patreon page for voluntary support, devlogs and early releases. Leave empty to hide the button.
+DONATE_URL = "https://patreon.com/kazhimee"
 
 
 class ControlCenter(Gtk.Application):
@@ -43,7 +51,8 @@ class ControlCenter(Gtk.Application):
         self.extension_search_serial = 0
         self.app_search: Gtk.SearchEntry | None = None
         self.apps: list[Gio.AppInfo] = []
-        self.flatpak_ids: set[str] = set()
+        self.user_flatpaks: set[str] = set()
+        self.system_flatpaks: set[str] = set()
 
     def on_activate(self, _application: Gtk.Application) -> None:
         if self.window:
@@ -53,12 +62,35 @@ class ControlCenter(Gtk.Application):
         self.window = Gtk.ApplicationWindow(application=self)
         self.window.set_title("TuxControl")
         self.window.set_default_size(980, 720)
+        
+        # Yerel ikon dosyasını pencere ikonu olarak set ediyoruz
+        # Hem kaynak dizininde (src/control_center) hem portable pakette
+        # (linux-unpacked/control_center) çalışacak şekilde ikonu ara.
+        here = Path(__file__).resolve()
+        icon_path = next(
+            (
+                candidate / "tuxcenter.png"
+                for candidate in (here.parents[1], here.parents[2], here.parent)
+                if (candidate / "tuxcenter.png").is_file()
+            ),
+            here.parent / "tuxcenter.png",
+        )
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.window.set_child(root)
 
         header = Gtk.HeaderBar()
         self.window.set_titlebar(header)
+
+        # Titlebar sol köşesine doğrudan resim dosyasından ikon ekliyoruz (kırılma riskine son)
+        if icon_path.is_file():
+            try:
+                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(icon_path), 24, 24, True)
+                header_icon = Gtk.Image.new_from_pixbuf(pixbuf)
+                header.pack_start(header_icon)
+            except Exception:
+                pass
+
         stack = Gtk.Stack()
         stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
         stack.set_transition_duration(140)
@@ -72,6 +104,8 @@ class ControlCenter(Gtk.Application):
             ("services", "Services", self.build_services),
             ("themes", "Themes", self.build_themes),
             ("extensions", "Extensions", self.build_extensions),
+            ("quickshare", "Quick Share", self.build_quickshare),
+            ("about", "About", self.build_about),
         ):
             stack.add_titled(builder(), name, title)
 
@@ -359,6 +393,97 @@ class ControlCenter(Gtk.Application):
 
         self.extension_list = Gtk.ListBox()
         page.append(self.list_scroller(self.extension_list))
+        return page
+
+    def build_quickshare(self) -> Gtk.Widget:
+        from control_center.quickshare.settings import build_form
+
+        page = self.page(
+            "Quick Share",
+            "Receive files from nearby Android devices. The receiver runs from the Quick Share tray.",
+        )
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_vexpand(True)
+        scroller.set_child(build_form())
+        page.append(scroller)
+        actions = Gtk.Box(spacing=8, halign=Gtk.Align.START)
+        send = Gtk.Button(label="Send files…")
+        send.add_css_class("suggested-action")
+        send.connect("clicked", lambda _button: self.open_quickshare_send())
+        tray = Gtk.Button(label="Start Quick Share tray")
+        tray.connect("clicked", lambda _button: self.start_quickshare_tray())
+        actions.append(send)
+        actions.append(tray)
+        page.append(actions)
+        return page
+
+    def open_quickshare_send(self) -> None:
+        env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1]) + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else "")}
+        subprocess.Popen([sys.executable, "-m", "control_center.quickshare.send_window"], env=env, start_new_session=True)
+
+    def start_quickshare_tray(self) -> None:
+        launcher = shutil.which("tuxcontrol-quickshare-tray")
+        if not launcher:
+            sibling = Path(__file__).resolve().parents[1] / "tuxcontrol-quickshare-tray"
+            launcher = str(sibling) if sibling.is_file() else None
+        if not launcher:
+            self.show_error("The tuxcontrol-quickshare-tray launcher was not found.")
+            return
+        try:
+            subprocess.Popen([launcher], start_new_session=True)
+            self.set_status("Starting the Quick Share tray…")
+        except OSError as error:
+            self.show_error(str(error))
+
+    def build_about(self) -> Gtk.Widget:
+        page = self.page(
+            "About TuxControl",
+            "Created by Kazhime Kagemori.\nIndependent software creator & developer.",
+        )
+        
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_vexpand(True)
+        
+        # Grid yapısı kuruyoruz ki butonlar alt alta yığılmasın, şık kartlar gibi yan yana/düzenli dursun
+        flow = Gtk.FlowBox()
+        flow.set_valign(Gtk.Align.START)
+        flow.set_max_children_per_line(2)
+        flow.set_min_children_per_line(1)
+        flow.set_row_spacing(10)
+        flow.set_column_spacing(10)
+        flow.set_margin_top(10)
+        flow.set_margin_bottom(20)
+        flow.set_margin_start(5)
+        flow.set_margin_end(5)
+
+        links = []
+        if DONATE_URL.startswith("https://"):
+            links.append(("💖 Support on Patreon (devlogs & early releases)", DONATE_URL))
+        links += [
+            ("🚀 Wishlist Open Music on Steam", "https://store.steampowered.com/app/4119740/Open_Music/"),
+            ("🌐 Open Music Website", "https://openmusic.kazhime.xyz/"),
+            ("📂 GitHub Profile", "https://github.com/kazhimee"),
+            ("🎮 Steam Curator", "https://store.steampowered.com/curator/45868427"),
+            ("📦 Itch.io Game Page", "https://kazhimee.itch.io/open-music"),
+            ("👤 Itch.io Creator Profile", "https://kazhimee.itch.io"),
+            ("𝕏 Dev Updates", "https://x.com/KazhimeKagemori"),
+            ("𝕏 Personal X", "https://x.com/kazhimee"),
+            ("🎵 Spotify Artist", "https://open.spotify.com/artist/1DqZhohhO6EgqvsW9NEtD5"),
+            ("🍎 Apple Music", "https://music.apple.com/tr/artist/kazhime-kagemori/1896259188"),
+            ("📺 YouTube Channel", "https://www.youtube.com/@KazhimeKagemori"),
+            ("📸 Instagram", "https://www.instagram.com/kazhime.wav"),
+        ]
+
+        for text, url in links:
+            btn = Gtk.Button(label=text)
+            btn.set_size_request(340, 48)
+            btn.connect("clicked", lambda _, u=url: Gio.AppInfo.launch_default_for_uri(u, None))
+            flow.append(btn)
+
+        scroller.set_child(flow)
+        page.append(scroller)
         return page
 
     def open_theme_store(self) -> None:
@@ -725,12 +850,17 @@ class ControlCenter(Gtk.Application):
         threading.Thread(target=work, daemon=True).start()
 
     def refresh_apps(self) -> None:
-        self.apps = Gio.AppInfo.get_all()
-        try:
-            self.flatpak_ids = {app_id for app_id, _name in backends.installed_flatpaks()}
-        except Exception as error:
-            self.show_error(str(error))
-            self.flatpak_ids = set()
+        # GIO refreshes its launcher cache lazily, so drop launchers deleted since the last scan.
+        self.apps = [
+            app for app in Gio.AppInfo.get_all()
+            if not app.get_filename() or Path(app.get_filename()).exists()
+        ]
+        for attribute, scope in (("user_flatpaks", "user"), ("system_flatpaks", "system")):
+            try:
+                setattr(self, attribute, {app_id for app_id, _name in backends.installed_flatpaks(scope)})
+            except Exception as error:
+                self.show_error(str(error))
+                setattr(self, attribute, set())
         self.populate_apps()
 
     def populate_apps(self) -> None:
@@ -760,8 +890,19 @@ class ControlCenter(Gtk.Application):
             line.set_margin_end(9)
             label = Gtk.Label(label=name)
             label.set_xalign(0)
-            label.set_hexpand(True)
             label.set_ellipsize(3)
+            label.add_css_class("heading")
+            text_column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            text_column.set_hexpand(True)
+            text_column.set_valign(Gtk.Align.CENTER)
+            text_column.append(label)
+            summary = (app.get_description() or "").strip()
+            if summary:
+                subtitle = Gtk.Label(label=summary)
+                subtitle.set_xalign(0)
+                subtitle.set_ellipsize(3)
+                subtitle.add_css_class("dim-label")
+                text_column.append(subtitle)
             icon = app.get_icon()
             if icon:
                 app_icon = Gtk.Image.new_from_gicon(icon)
@@ -769,22 +910,16 @@ class ControlCenter(Gtk.Application):
                 line.append(app_icon)
             else:
                 line.append(self.themed_icon("application-x-executable", 36))
-            line.append(label)
+            line.append(text_column)
             launch = Gtk.Button(label="Launch")
             launch.connect("clicked", lambda _button, selected=app: self.launch_app(selected))
             line.append(launch)
-            is_flatpak = app_id.removesuffix(".desktop") in self.flatpak_ids
+            launch.set_valign(Gtk.Align.CENTER)
             remove = Gtk.Button(label="Remove")
-            remove.set_sensitive(is_flatpak or bool(backends.available_package_manager()))
-            remove.set_tooltip_text(
-                "Remove using Flatpak or the detected system package owner."
-                if is_flatpak
-                else "Package ownership is checked when you select Remove."
-            )
-            remove.connect(
-                "clicked",
-                lambda _button, selected=app, flatpak=is_flatpak: self.remove_app(selected, flatpak),
-            )
+            remove.set_valign(Gtk.Align.CENTER)
+            remove.add_css_class("destructive-action")
+            remove.set_tooltip_text("The installation source is checked when you select Remove.")
+            remove.connect("clicked", lambda _button, selected=app: self.remove_app(selected))
             line.append(remove)
             row.set_child(line)
             self.app_list.append(row)
@@ -798,19 +933,125 @@ class ControlCenter(Gtk.Application):
         except GLib.Error as error:
             self.show_error(str(error))
 
-    def remove_app(self, app: Gio.AppInfo, is_flatpak: bool) -> None:
-        app_id = (app.get_id() or "").removesuffix(".desktop")
-        package = None if is_flatpak else backends.desktop_app_package(app.get_filename() or "")
-        if is_flatpak:
-            self.confirm(f"Uninstall Flatpak application {app_id} from your user account?", lambda: self.run_worker(
-                f"Removing {app_id}", lambda: backends.remove_flatpak(app_id), lambda _result: self.refresh_apps()
-            ))
-        elif package:
-            self.confirm(f"Remove system package “{package}”? PolicyKit will request administrator authorization.", lambda: self.run_worker(
-                f"Removing {package}", lambda: backends.change_system_package(package, "remove"), lambda _result: self.refresh_apps()
-            ))
-        else:
-            self.show_error("Could not identify the package that owns this application launcher.")
+    def remove_app(self, app: Gio.AppInfo) -> None:
+        desktop_id = app.get_id() or ""
+        desktop_file = app.get_filename() or ""
+        user_flatpaks, system_flatpaks = set(self.user_flatpaks), set(self.system_flatpaks)
+
+        def confirmed(plan: backends.RemovalPlan) -> None:
+            self.confirm_removal(plan)
+
+        self.run_worker(
+            "Checking how the application was installed",
+            lambda: backends.plan_app_removal(desktop_id, desktop_file, user_flatpaks, system_flatpaks),
+            confirmed,
+        )
+
+    def confirm_removal(self, plan: backends.RemovalPlan) -> None:
+        assert self.window is not None
+        popup = Gtk.Window(application=self, title="TuxControl — Confirm removal")
+        popup.set_transient_for(self.window)
+        popup.set_modal(True)
+        popup.set_default_size(560, 380)
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        for side in ("top", "bottom", "start", "end"):
+            getattr(content, f"set_margin_{side}")(20)
+        title = Gtk.Label(label="Confirm removal", xalign=0)
+        title.add_css_class("title-2")
+        content.append(title)
+        message = Gtk.Label(label=plan.message, xalign=0, wrap=True)
+        content.append(message)
+        if plan.details:
+            heading = Gtk.Label(label="What will happen", xalign=0)
+            heading.add_css_class("heading")
+            content.append(heading)
+            view = Gtk.TextView(editable=False, cursor_visible=False, monospace=True, wrap_mode=Gtk.WrapMode.WORD_CHAR)
+            view.set_left_margin(8)
+            view.set_top_margin(6)
+            view.get_buffer().set_text("\n".join(plan.details))
+            scroller = Gtk.ScrolledWindow(vexpand=True)
+            scroller.add_css_class("card")
+            scroller.set_child(view)
+            content.append(scroller)
+        buttons = Gtk.Box(spacing=8, halign=Gtk.Align.END)
+        cancel = Gtk.Button(label="Cancel")
+        cancel.connect("clicked", lambda *_: popup.destroy())
+        remove = Gtk.Button(label="Remove")
+        remove.add_css_class("destructive-action")
+
+        def accept(*_args) -> None:
+            popup.destroy()
+            self.run_removal(plan)
+
+        remove.connect("clicked", accept)
+        buttons.append(cancel)
+        buttons.append(remove)
+        content.append(buttons)
+        popup.set_child(content)
+        popup.present()
+
+    def run_removal(self, plan: backends.RemovalPlan) -> None:
+        """Run a removal while showing the live output in a progress window."""
+        assert self.window is not None
+        popup = Gtk.Window(application=self, title=f"TuxControl — Removing {plan.target}")
+        popup.set_transient_for(self.window)
+        popup.set_modal(True)
+        popup.set_default_size(580, 360)
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        for side in ("top", "bottom", "start", "end"):
+            getattr(content, f"set_margin_{side}")(20)
+        heading = Gtk.Box(spacing=10)
+        spinner = Gtk.Spinner(spinning=True)
+        title = Gtk.Label(label=f"Removing {plan.target}…", xalign=0, hexpand=True)
+        title.add_css_class("title-2")
+        heading.append(spinner)
+        heading.append(title)
+        content.append(heading)
+        view = Gtk.TextView(editable=False, cursor_visible=False, monospace=True, wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        view.set_left_margin(8)
+        view.set_top_margin(6)
+        buffer = view.get_buffer()
+        scroller = Gtk.ScrolledWindow(vexpand=True)
+        scroller.add_css_class("card")
+        scroller.set_child(view)
+        content.append(scroller)
+        close = Gtk.Button(label="Close", halign=Gtk.Align.END, sensitive=False)
+        close.connect("clicked", lambda *_: popup.destroy())
+        content.append(close)
+        popup.set_child(content)
+        popup.set_deletable(False)
+        popup.present()
+
+        def append(line: str) -> bool:
+            buffer.insert(buffer.get_end_iter(), line + "\n")
+            adjustment = scroller.get_vadjustment()
+            adjustment.set_value(adjustment.get_upper())
+            return GLib.SOURCE_REMOVE
+
+        def finish(error: str | None) -> bool:
+            spinner.stop()
+            popup.set_deletable(True)
+            close.set_sensitive(True)
+            if error:
+                title.set_text("Removal failed")
+                append(error)
+                self.set_status(f"Removing {plan.target} — failed")
+            else:
+                title.set_text(f"{plan.target} removed")
+                self.set_status(f"Removing {plan.target} — complete")
+                self.refresh_apps()
+            return GLib.SOURCE_REMOVE
+
+        def work() -> None:
+            try:
+                backends.execute_removal(plan, lambda line: GLib.idle_add(append, line))
+            except Exception as error:
+                GLib.idle_add(finish, str(error))
+                return
+            GLib.idle_add(finish, None)
+
+        self.set_status(f"Removing {plan.target}")
+        threading.Thread(target=work, daemon=True).start()
 
     def install_package(self) -> None:
         package = self.package_entry.get_text().strip()
@@ -1150,6 +1391,7 @@ class ControlCenter(Gtk.Application):
         label.set_margin_start(12)
         label.set_margin_end(12)
         label.set_wrap(True)
+        row.set_child(label)
         row.set_child(label)
         return row
 

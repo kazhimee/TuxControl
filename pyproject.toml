@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tuxcontrol"
-version = "0.1.0"
+version = "0.1.2"
 description = "An open-source GNOME control center for apps, services, themes, and extensions"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,11 +19,19 @@ classifiers = [
   "Programming Language :: Python :: 3",
 ]
 
+[project.optional-dependencies]
+quickshare = ["pystray>=0.19", "Pillow>=10", "pyquickshare"]
+
 [project.scripts]
 tuxcontrol = "control_center.app:main"
+tuxcontrol-quickshare-tray = "control_center.quickshare.tray:main"
+tuxcontrol-quickshare-settings = "control_center.quickshare.settings:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.data-files]
-"share/applications" = ["org.tuxcontrol.App.desktop"]
+"share/applications" = [
+  "packaging/desktop/org.tuxcontrol.App.desktop",
+  "packaging/desktop/org.tuxcontrol.QuickShare.desktop",
+]

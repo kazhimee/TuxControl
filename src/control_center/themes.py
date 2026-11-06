@@ -95,13 +95,16 @@ def active_theme_names(desktop: str) -> set[tuple[str, str]]:
             ("org.gnome.desktop.interface", "gtk-theme", "gtk"),
             ("org.gnome.shell.extensions.user-theme", "name", "gtk"),
         ):
-            result = subprocess.run(
-                ["gsettings", "get", schema, key],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
+            try:
+                result = subprocess.run(
+                    ["gsettings", "get", schema, key],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+            except (OSError, subprocess.SubprocessError):
+                continue
             if result.returncode == 0:
                 name = result.stdout.strip().strip("'\"")
                 if name and name != "''":
